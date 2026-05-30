@@ -1,10 +1,15 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import '../tokens.css'
 import '../style.css'
 
 export const metadata: Metadata = {
   title: 'JobNova — AI Career Intelligence',
   description: 'The new way talent meets opportunity in the AI era. Navigate your career rise with effortless intelligence.',
+}
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

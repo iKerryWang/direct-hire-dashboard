@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic'
 import { useEffect, useRef, useState } from 'react'
+import { AgentPreview, AutoApplyPreview, ResumePreview } from '@/components/FeaturePreviews'
 
 const LottiePlayer = dynamic(
   () => import('@lottiefiles/react-lottie-player').then(mod => mod.Player),
@@ -13,7 +14,7 @@ type Feature = {
   label: string
   title: string
   body: string
-  duration: number   // ms
+  duration: number
   lottie?: string
 }
 
@@ -49,12 +50,123 @@ const FEATURES: Feature[] = [
   },
 ]
 
+function FeaturePreview({
+  feature,
+  active,
+  loop,
+}: {
+  feature: Feature
+  active: boolean
+  loop?: boolean
+}) {
+  if (feature.lottie) {
+    return (
+      <LottiePlayer
+        autoplay={active}
+        loop
+        src={feature.lottie}
+        className="features-lottie"
+      />
+    )
+  }
+  if (feature.id === 'agent') return <AgentPreview active={active} loop={loop} />
+  if (feature.id === 'resume') return <ResumePreview active={active} loop={loop} />
+  if (feature.id === 'auto-apply') return <AutoApplyPreview active={active} loop={loop} />
+  return null
+}
+
+function FeatureItem({
+  feature,
+  index,
+  active,
+  pinned,
+  onSelect,
+  started,
+  autoPlay,
+  variant,
+}: {
+  feature: Feature
+  index: number
+  active: boolean
+  pinned: boolean
+  onSelect?: () => void
+  started: boolean
+  autoPlay: boolean
+  variant: 'desktop' | 'mobile'
+}) {
+  const isMobile = variant === 'mobile'
+
+  return (
+    <div
+      className={`features-item${active || isMobile ? ' is-active' : ''}${pinned ? ' is-pinned' : ''}${isMobile ? ' features-item--mobile' : ''}`}
+      onClick={onSelect}
+      role={onSelect ? 'button' : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onKeyDown={onSelect ? (e) => { if (e.key === 'Enter' || e.key === ' ') onSelect() } : undefined}
+    >
+      <div className="features-item-content">
+        <p className="features-item-label">{feature.label}</p>
+        <h3 className="features-item-title">{feature.title}</h3>
+        <div className="features-item-desc">
+          <div className="features-item-desc-inner">
+            <p>{feature.body}</p>
+          </div>
+        </div>
+      </div>
+
+      {!isMobile && (
+        <div className="features-progress">
+          {started && active && autoPlay && (
+            <div
+              key={`pb-${index}`}
+              className="features-progress-bar"
+              style={{ animationDuration: `${feature.duration}ms` }}
+            />
+          )}
+          {started && active && pinned && (
+            <div className="features-progress-pinned" aria-hidden="true" />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Features() {
   const [active, setActive] = useState(0)
+  const [pinnedIndex, setPinnedIndex] = useState<number | null>(null)
   const [started, setStarted] = useState(false)
+  const [isDesktop, setIsDesktop] = useState(true)
+  const [visibleMobileSteps, setVisibleMobileSteps] = useState<Set<number>>(new Set())
   const sectionRef = useRef<HTMLElement>(null)
+  const mobileStepRefs = useRef<(HTMLDivElement | null)[]>([])
 
-  // Start animations when section enters viewport
+  const isPinned = pinnedIndex !== null
+  const isLooping = isPinned && pinnedIndex === active
+
+  const handleSelect = (index: number) => {
+    if (pinnedIndex === index) {
+      setPinnedIndex(null)
+      setActive(index)
+      return
+    }
+    setActive(index)
+    setPinnedIndex(index)
+  }
+
+  const handlePinPreview = () => {
+    if (pinnedIndex === active) return
+    setPinnedIndex(active)
+  }
+
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1025px)')
+    const update = () => setIsDesktop(mq.matches)
+    update()
+    mq.addEventListener('change', update)
+    return () => mq.removeEventListener('change', update)
+  }, [])
+
   useEffect(() => {
     const observer = new IntersectionObserver(
       ([entry]) => { if (entry.isIntersecting) setStarted(true) },
@@ -64,7 +176,10 @@ export default function Features() {
     return () => observer.disconnect()
   }, [])
 
+  // Desktop: scroll-pinned tab switching (paused while a tab is pinned)
   useEffect(() => {
+    if (!isDesktop || isPinned) return
+
     let ticking = false
 
     const updateByScroll = () => {
@@ -75,17 +190,13 @@ export default function Features() {
       const viewportH = window.innerHeight || 1
       const lastIndex = FEATURES.length - 1
 
-      if (rect.top < viewportH && rect.bottom > 0) {
-        setStarted(true)
-      }
+      if (rect.top < viewportH && rect.bottom > 0) setStarted(true)
 
-      // 进入区段初期优先稳定展示第一条，避免因滚动位置抖动被过早切走
       if (rect.top >= viewportH * 0.12) {
         setActive(prev => (prev === 0 ? prev : 0))
         return
       }
 
-      // 离开区段前固定最后一条，避免尾段回跳
       if (rect.bottom <= viewportH * 0.42) {
         setActive(prev => (prev === lastIndex ? prev : lastIndex))
         return
@@ -96,7 +207,6 @@ export default function Features() {
       const progress = (start - rect.top) / (start - end)
       const clamped = Math.min(1, Math.max(0, progress))
       const nextActive = Math.min(lastIndex, Math.floor(clamped * FEATURES.length))
-
       setActive(prev => (prev === nextActive ? prev : nextActive))
     }
 
@@ -117,16 +227,45 @@ export default function Features() {
       window.removeEventListener('scroll', onScroll)
       window.removeEventListener('resize', onScroll)
     }
-  }, [])
+  }, [isDesktop, isPinned])
 
-  const handleProgressEnd = () => {
-    setActive(prev => (prev + 1) % FEATURES.length)
-  }
+  // Desktop: auto-advance when not pinned
+  useEffect(() => {
+    if (!isDesktop || !started || isPinned) return
+    const feature = FEATURES[active]
+    const timer = window.setTimeout(() => {
+      setActive(prev => (prev + 1) % FEATURES.length)
+    }, feature.duration)
+    return () => clearTimeout(timer)
+  }, [active, isDesktop, isPinned, started])
+
+  // Mobile: run preview animations only while each step is in view
+  useEffect(() => {
+    if (isDesktop) return
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        setVisibleMobileSteps(prev => {
+          const next = new Set(prev)
+          entries.forEach(entry => {
+            const idx = Number((entry.target as HTMLElement).dataset.index)
+            if (Number.isNaN(idx)) return
+            if (entry.isIntersecting) next.add(idx)
+            else next.delete(idx)
+          })
+          return next
+        })
+      },
+      { threshold: 0.4, rootMargin: '0px 0px -5% 0px' }
+    )
+
+    mobileStepRefs.current.forEach(el => { if (el) observer.observe(el) })
+    return () => observer.disconnect()
+  }, [isDesktop])
 
   return (
     <section ref={sectionRef} className="features" id="features">
       <div className="features-pin">
-        {/* Section header */}
         <div className="container">
           <div className="section-header section-header--center">
             <p className="section-label">✦ How It Works</p>
@@ -137,62 +276,73 @@ export default function Features() {
           </div>
         </div>
 
-        {/* Main content */}
-        <div className="container features-body">
-
-          {/* Left: feature list */}
+        <div className="container features-body features-body--desktop">
           <div className="features-list">
             {FEATURES.map((f, i) => (
-              <div
+              <FeatureItem
                 key={f.id}
-                className={`features-item${i === active ? ' is-active' : ''}`}
-                onClick={() => setActive(i)}
-              >
-                <div className="features-item-content">
-                  <p className="features-item-label">{f.label}</p>
-                  <h3 className="features-item-title">{f.title}</h3>
-                  <div className="features-item-desc">
-                    <div className="features-item-desc-inner">
-                      <p>{f.body}</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Progress bar — mounts fresh each time active changes */}
-                <div className="features-progress">
-                  {started && i === active && (
-                    <div
-                      key={`pb-${active}`}
-                      className="features-progress-bar"
-                      style={{ animationDuration: `${f.duration}ms` }}
-                      onAnimationEnd={handleProgressEnd}
-                    />
-                  )}
-                </div>
-              </div>
+                feature={f}
+                index={i}
+                active={i === active}
+                pinned={pinnedIndex === i}
+                started={started}
+                autoPlay={!isPinned}
+                variant="desktop"
+                onSelect={() => handleSelect(i)}
+              />
             ))}
           </div>
 
-          {/* Right: preview */}
-          <div className="features-preview-wrap">
+          <div
+            className={`features-preview-wrap${isPinned ? ' is-pinned' : ''}`}
+            onClick={handlePinPreview}
+            role="button"
+            tabIndex={0}
+            aria-label="Click to stay on this preview"
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handlePinPreview() }}
+          >
             {FEATURES.map((f, i) => (
               <div
                 key={f.id}
                 className={`features-preview${i === active ? ' is-active' : ''}`}
               >
-                {f.lottie ? (
-                  <LottiePlayer
-                    autoplay
-                    loop
-                    src={f.lottie}
-                    className="features-lottie"
-                  />
-                ) : (
-                  <div className={`features-preview-card features-preview-card--${f.id}`} />
-                )}
+                <FeaturePreview
+                  feature={f}
+                  active={i === active}
+                  loop={isLooping && i === active}
+                />
               </div>
             ))}
           </div>
+        </div>
+
+        <div className="container features-mobile">
+          {FEATURES.map((f, i) => (
+            <div
+              key={f.id}
+              className="features-mobile-step"
+              data-index={i}
+              ref={el => { mobileStepRefs.current[i] = el }}
+            >
+              <FeatureItem
+                feature={f}
+                index={i}
+                active
+                pinned={false}
+                started={started}
+                autoPlay={false}
+                variant="mobile"
+              />
+              <div className="features-mobile-preview">
+                <FeaturePreview
+                  key={`${f.id}-${visibleMobileSteps.has(i) ? 'on' : 'off'}`}
+                  feature={f}
+                  active={visibleMobileSteps.has(i)}
+                  loop={visibleMobileSteps.has(i)}
+                />
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </section>
